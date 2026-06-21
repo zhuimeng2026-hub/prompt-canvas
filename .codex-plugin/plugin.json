@@ -1,0 +1,42 @@
+{
+  "name": "prompt-canvas",
+  "version": "0.2.0",
+  "description": "A local infinite canvas for Codex, powered by tldraw and built for visual thinking, image generation, and annotation-driven edits.",
+  "author": {
+    "name": "LunarAITalk",
+    "email": "lqshow@gmail.com"
+  },
+  "homepage": "https://github.com/lqshow/prompt-canvas",
+  "keywords": [
+    "canvas",
+    "tldraw",
+    "whiteboard",
+    "image-generation",
+    "visual-collaboration"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Prompt Canvas",
+    "shortDescription": "Create, annotate, and generate on a local infinite canvas in Codex.",
+    "longDescription": "Prompt Canvas brings a tldraw-powered infinite canvas into Codex for visual planning and creative iteration. Open a local canvas for the active project, sketch ideas, place AI image holders, generate images into selected slots, and turn annotated screenshots into revised image outputs while keeping canvas data in the user's project workspace.",
+    "developerName": "LunarAITalk",
+    "category": "Productivity",
+    "websiteURL": "https://github.com/LunarAITalk/prompt-canvas",
+    "brandColor": "#1a73e8",
+    "logo": "./assets/app-icon.png",
+    "composerIcon": "./assets/app-icon.png",
+    "capabilities": [
+      "Interactive canvas",
+      "Local web service",
+      "AI image generation",
+      "Annotation-driven editing",
+      "Project-local persistence"
+    ],
+    "defaultPrompt": [
+      "Open the Prompt Canvas for this project.",
+      "Use my Prompt Canvas annotation screenshot to generate a clean revised image beside the original.",
+      "Generate a new image into the selected Prompt Canvas AI image holder."
+    ]
+  }
+}

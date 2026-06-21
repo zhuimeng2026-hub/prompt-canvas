@@ -1,0 +1,20 @@
+{
+  "name": "prompt-canvas",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.0.0",
+    "fractional-indexing": "^3.2.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tldraw": "^2.4.6",
+    "vite": "^7.0.0"
+  },
+  "devDependencies": {}
+}

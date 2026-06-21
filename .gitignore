@@ -1,0 +1,71 @@
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Logs
+*.log
+
+# Runtime data / SQLite databases
+cowart.db
+.cowart.db
+.cowart.db-shm
+.cowart.db-wal
+
+# Application state (user data, will be regenerated)
+.cowart_state.json
+.cowart_state.json.bak
+.cowart_state.*.json
+
+# Generated images and user output (per-canvas assets)
+generated/
+cover-output/
+output-cover-hero/
+
+# Plugin-mode project-local canvas data (user workspace)
+canvas/pages/
+
+# Vite build output
+canvas/dist/
+node_modules/
+
+# Legacy project runtime data
+infinite-canvas/canvas-data/
+
+# Backup files
+*.bak
+*.bak-*
+
+# One-off migration scripts
+.migrate_to_sqlite.py
+
+# IDE / editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Node / npm (if ever added)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
