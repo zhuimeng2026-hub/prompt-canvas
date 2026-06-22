@@ -16,5 +16,8 @@
     "tldraw": "^2.4.6",
     "vite": "^7.0.0"
   },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "devDependencies": {}
 }

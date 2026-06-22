@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS images (
   y             REAL NOT NULL DEFAULT 0,
   w             REAL NOT NULL DEFAULT 300,
   h             REAL NOT NULL DEFAULT 400,
-  image_url     TEXT,               -- /generated/<canvas_id>/<filename>
+  image_url     TEXT,               -- /page-assets/<canvas_id>/<filename>
   natural_w     INTEGER,            -- source PNG pixel width
   natural_h     INTEGER,            -- source PNG pixel height
   aspect_ratio  REAL,               -- natural_w / natural_h

@@ -10,7 +10,7 @@ server:
 
 Environment
 -----------
-PROMPT_CANVAS_BASE_URL  default http://127.0.0.1:47321
+PROMPT_CANVAS_BASE_URL  default http://127.0.0.1:52846
 PROMPT_CANVAS_CANVAS_ID default canvas id when the tool call omits one
 """
 from __future__ import annotations
@@ -20,9 +20,39 @@ import json
 import os
 import sys
 import urllib.parse
+from pathlib import Path
 from typing import Any
 
-BASE_URL = os.environ.get("PROMPT_CANVAS_BASE_URL", "http://127.0.0.1:47321").rstrip("/")
+
+def _load_env_file():
+    """Load .env if present, otherwise .env.example. Existing env vars win."""
+    root = Path(__file__).parent.parent
+    for name in (".env", ".env.example"):
+        path = root / name
+        if path.exists():
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    for raw in f:
+                        line = raw.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        if "=" not in line:
+                            continue
+                        key, value = line.split("=", 1)
+                        key = key.strip()
+                        value = value.strip().strip('"').strip("'")
+                        if key and key not in os.environ:
+                            os.environ[key] = value
+            except OSError:
+                pass
+            break
+
+
+_load_env_file()
+
+_HOST = os.environ.get("PROMPT_CANVAS_HOST", "127.0.0.1")
+_PORT = os.environ.get("PROMPT_CANVAS_PORT", "52846")
+BASE_URL = os.environ.get("PROMPT_CANVAS_BASE_URL", f"http://{_HOST}:{_PORT}").rstrip("/")
 DEFAULT_CANVAS = os.environ.get("PROMPT_CANVAS_CANVAS_ID", "")
 SERVER_NAME = "prompt-canvas"
 SERVER_VERSION = "0.2.0"
@@ -148,7 +178,7 @@ TOOLS: list[dict] = [
         "name": "prompt_canvas_fill_ai_image_holder",
         "description": (
             "Fill an AI Image placeholder with a generated image URL. "
-            "Pass the local URL returned by the image generator (e.g. /generated/<canvas>/<file>.jpg)."
+            "Pass the local URL returned by the image generator (e.g. /page-assets/<canvas>/<file>.jpg)."
         ),
         "inputSchema": {
             "type": "object",

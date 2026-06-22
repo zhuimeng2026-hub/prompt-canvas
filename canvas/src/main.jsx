@@ -10,8 +10,6 @@ import {
   BaseBoxShapeUtil,
   HTMLContainer,
   createShapeId,
-  useEditor,
-  useValue,
 } from 'tldraw';
 import './styles.css';
 
@@ -130,13 +128,20 @@ const iconBlue  = { ...plusIconBase, background: '#3b82f6' };
 const iconAmber = { ...plusIconBase, background: '#FFB020' };
 const iconGreen = { ...plusIconBase, background: '#22c55e' };
 
-function HoverHandle() {
-  const editor = useEditor();
-  const hoveredId = useValue(
-    'hovered-shape-id',
-    () => editor.getHoveredShape()?.id ?? null,
-    [editor]
-  );
+// Force re-render when the tldraw store changes (selection, hover, camera, etc.)
+function useEditorReactive(editor) {
+  const [, forceUpdate] = useState(0);
+  useEffect(() => {
+    if (!editor) return;
+    const unsubscribe = editor.store.listen(() => {
+      forceUpdate(n => (n + 1) & 0xffff);
+    });
+    return unsubscribe;
+  }, [editor]);
+}
+
+function HoverHandle({ editor }) {
+  useEditorReactive(editor);
   const [popover, setPopover] = useState(null);
 
   useEffect(() => {
@@ -155,10 +160,13 @@ function HoverHandle() {
     };
   }, [popover]);
 
+  let hoveredId = null;
+  try { hoveredId = editor?.getHoveredShape()?.id ?? null; } catch (e) {}
+
   let handleShape = null;
   let handleScreen = null;
   let handleSize = 18;
-  if (hoveredId) {
+  if (hoveredId && editor) {
     const s = editor.getShape(hoveredId);
     if (s && CONNECTABLE_TYPES.has(s.type)) {
       const b = editor.getShapePageBounds(s);
@@ -262,6 +270,140 @@ function HoverHandle() {
         document.body
       )}
     </div>
+  );
+}
+
+
+// -------------------------------------------------------------
+// AI Image floating toolbar (download / alt / new version)
+// -------------------------------------------------------------
+async function downloadImage(url, filename) {
+  const fullUrl = url.startsWith('http') ? url : window.location.origin + url;
+  try {
+    const res = await fetch(fullUrl, { credentials: 'same-origin' });
+    if (!res.ok) throw new Error('fetch failed');
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename || 'ai-image.png';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(blobUrl);
+    return { ok: true };
+  } catch (e) {
+    // fallback: open in new tab
+    window.open(fullUrl, '_blank');
+    return { ok: false, error: e.message };
+  }
+}
+
+function AiImageToolbar({ editor }) {
+  useEditorReactive(editor);
+  const [showAlt, setShowAlt] = useState(false);
+
+  let target = null;
+  if (editor) {
+    for (const id of editor.getSelectedShapeIds()) {
+      const s = editor.getShape(id);
+      if (s && s.type === 'ai-image') {
+        const url = s.props.imageUrl || s.meta?.image_url;
+        if (url) { target = s; break; }
+      }
+    }
+    if (!target) {
+      const h = editor.getHoveredShape();
+      if (h && h.type === 'ai-image') {
+        const url = h.props.imageUrl || h.meta?.image_url;
+        if (url) target = h;
+      }
+    }
+  }
+
+  let bounds = null;
+  if (target && editor) {
+    const b = editor.getShapePageBounds(target);
+    if (b) {
+      const tl = editor.pageToScreen({ x: b.x, y: b.y });
+      const tr = editor.pageToScreen({ x: b.x + b.w, y: b.y });
+      bounds = { x: tl.x, y: tl.y, w: Math.max(1, tr.x - tl.x) };
+    }
+  }
+
+  useEffect(() => {
+    if (!target) setShowAlt(false);
+  }, [target?.id]);
+
+  if (!target || !bounds) return null;
+
+  const imageUrl = target.props.imageUrl || target.meta?.image_url || '';
+  const prompt = target.props.prompt || target.meta?.prompt || '';
+  const version = target.props.version || target.meta?.version || '';
+  const label = target.props.label || target.meta?.label || 'AI Image';
+
+  const handleNewVersion = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    spawnImageChild(editor, target);
+  };
+
+  const handleDownload = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const filename = `prompt-canvas-${version || 'image'}.png`;
+    const res = await downloadImage(imageUrl, filename);
+    toast(res.ok ? '已下载图片' : '下载失败，已在新标签页打开');
+  };
+
+  const handleAlt = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setShowAlt(v => !v);
+  };
+
+  return createPortal(
+    <div
+      className="cw-ai-image-toolbar"
+      style={{
+        position: 'fixed',
+        left: bounds.x + bounds.w / 2,
+        top: bounds.y - 8,
+        transform: 'translate(-50%, -100%)',
+        zIndex: 9990,
+      }}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="cw-ai-toolbar-inner">
+        <button className="cw-ai-toolbar-btn" onClick={handleNewVersion} title="生成新版本 (v2/v3...)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+            <circle cx="8.5" cy="8.5" r="1.5" />
+            <path d="M21 15l-5-5L5 21" />
+          </svg>
+        </button>
+        <button className="cw-ai-toolbar-btn" onClick={handleDownload} title="下载图片">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+        </button>
+        <button className="cw-ai-toolbar-btn cw-ai-toolbar-alt" onClick={handleAlt} title="查看 Prompt">
+          ALT
+        </button>
+      </div>
+      {showAlt && (
+        <div className="cw-ai-alt-popover">
+          <div className="cw-ai-alt-row"><strong>{label} · {version}</strong></div>
+          <div className="cw-ai-alt-row cw-ai-alt-prompt">{prompt || '（无 prompt）'}</div>
+          <div className="cw-ai-alt-row cw-ai-alt-url" title={imageUrl}>{imageUrl}</div>
+        </div>
+      )}
+    </div>,
+    document.body
   );
 }
 
@@ -620,6 +762,31 @@ function getAnnotationShapes(editor, targetId) {
     const meta = s.meta || {};
     return meta.role === 'annotation' && (meta.target === targetId || meta.target === bareId);
   });
+}
+
+function syncAnnotationsToImages(editor, imagePositions) {
+  const images = editor.getCurrentPageShapes().filter(s => s.type === 'ai-image');
+  const liveIds = new Set();
+  for (const img of images) {
+    liveIds.add(img.id);
+    const prev = imagePositions.get(img.id);
+    if (!prev) {
+      imagePositions.set(img.id, { x: img.x, y: img.y });
+      continue;
+    }
+    const dx = img.x - prev.x;
+    const dy = img.y - prev.y;
+    if (dx === 0 && dy === 0) continue;
+    imagePositions.set(img.id, { x: img.x, y: img.y });
+    const annotations = getAnnotationShapes(editor, img.id);
+    for (const anno of annotations) {
+      if (anno.type === 'arrow') continue;
+      editor.updateShape({ id: anno.id, type: anno.type, x: anno.x + dx, y: anno.y + dy });
+    }
+  }
+  for (const id of imagePositions.keys()) {
+    if (!liveIds.has(id)) imagePositions.delete(id);
+  }
 }
 
 function normalizeAnnotation(shape, target) {
@@ -1074,20 +1241,103 @@ function applyServerShape(editor, action, data) {
   }
 }
 
-function startSse() {
-  const es = new EventSource(canvasUrl('/api/events'));
-  es.onmessage = (ev) => {
+function hydrateFromServer(editor, srv) {
+  const serverShapes = Object.values(srv.shapes || {});
+  for (const s of serverShapes) {
+    const tid = createShapeId(s.id);
+    if (!editor.getShape(tid)) {
+      applyServerShape(editor, 'create_ai_image_holder', { shape: s });
+    }
+    if (s.image_url) {
+      applyServerShape(editor, 'fill_ai_image_holder', {
+        shape_id: s.id,
+        image_url: s.image_url,
+        image_meta: s.image_meta || {},
+        version: s.version,
+        prompt: s.prompt,
+        w: s.w,
+        h: s.h,
+      });
+    }
+  }
+  const serverIds = new Set(serverShapes.map(s => s.id));
+  for (const sh of editor.getCurrentPageShapes()) {
+    if (sh.type === 'ai-image' && sh.id.startsWith('shape:ai_')) {
+      const logicalId = sh.id.replace('shape:', '');
+      if (!serverIds.has(logicalId)) {
+        editor.deleteShape(sh.id);
+      }
+    }
+  }
+}
+
+function startSyncLoop() {
+  let es = null;
+  let reconnectTimer = null;
+  let pollTimer = null;
+  let connected = false;
+
+  const getCanvasId = () => new URLSearchParams(window.location.search).get('canvas') || 'imported';
+
+  const connectSse = () => {
+    if (es) { es.close(); es = null; }
+    es = new EventSource(canvasUrl('/api/events'));
+    es.onmessage = (ev) => {
+      try {
+        const msg = JSON.parse(ev.data);
+        if (msg.event === 'hello' || msg.event === 'read_annotations' || msg.event === 'image_generated') return;
+        if (editorRef) applyServerShape(editorRef, msg.event, msg.data);
+      } catch (e) {
+        console.warn('sse parse', e);
+      }
+    };
+    es.onerror = () => {
+      setCodexStatus(false);
+      connected = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connectSse, 3000);
+    };
+    es.onopen = () => {
+      setCodexStatus(true);
+      connected = true;
+    };
+  };
+
+  const poll = async () => {
+    if (!editorRef) return;
     try {
-      const msg = JSON.parse(ev.data);
-      if (msg.event === 'hello' || msg.event === 'read_annotations' || msg.event === 'image_generated') return;
-      if (editorRef) applyServerShape(editorRef, msg.event, msg.data);
+      const res = await fetch(canvasUrl(`/api/state?canvas=${getCanvasId()}`));
+      const data = await res.json();
+      hydrateFromServer(editorRef, data);
+      setCodexStatus(true);
     } catch (e) {
-      console.warn('sse parse', e);
+      console.warn('poll failed', e);
+      setCodexStatus(false);
     }
   };
-  es.onerror = () => setCodexStatus(false);
-  es.onopen = () => setCodexStatus(true);
-  return es;
+
+  connectSse();
+  pollTimer = setInterval(() => {
+    if (!connected) poll();
+  }, 5000);
+
+  const onVisible = () => {
+    if (!document.hidden && editorRef) {
+      poll();
+      if (!connected) connectSse();
+    }
+  };
+  document.addEventListener('visibilitychange', onVisible);
+
+  // expose manual refresh
+  window.__promptCanvasRefresh = poll;
+
+  return () => {
+    if (es) es.close();
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    if (pollTimer) clearInterval(pollTimer);
+    document.removeEventListener('visibilitychange', onVisible);
+  };
 }
 
 
@@ -1375,10 +1625,11 @@ function setupCodexConsole() {
     });
     if (!v2holder.ok) return;
     applyServerShape(editorRef, 'create_ai_image_holder', v2holder);
+    const nextVersion = v2holder.data.shape.version;
 
     const gen = await codexCommand('generate_image', {
       prompt: editPrompt,
-      style: 'v2',
+      style: nextVersion,
       width: Math.round(target.props.w) || 720,
       height: Math.round(target.props.h) || 960,
     });
@@ -1391,12 +1642,12 @@ function setupCodexConsole() {
       if (fill.ok) {
         applyServerShape(editorRef, 'fill_ai_image_holder', fill);
         refreshFilesRail();
-        const v2shape = editorRef.getCurrentPageShapes().find(s => s.props.version === 'v2');
-        if (v2shape) {
-          editorRef.select(v2shape.id);
-          frameShape(editorRef, v2shape);
+        const newShape = editorRef.getCurrentPageShapes().find(s => s.props.version === nextVersion);
+        if (newShape) {
+          editorRef.select(newShape.id);
+          frameShape(editorRef, newShape);
         }
-        toast('已生成 v2');
+        toast(`已生成 ${nextVersion}`);
       }
     }
   });
@@ -1414,14 +1665,21 @@ function setupCodexConsole() {
 // Tldraw mount
 // -------------------------------------------------------------
 function TldrawApp() {
+  const [mountedEditor, setMountedEditor] = useState(null);
+
   const onMount = (editor) => {
     editorRef = editor;
     window.editorRef = editor;
     window.__shapes = () => editor.getCurrentPageShapes().map(s => ({id: s.id, type: s.type, x: s.x, y: s.y, w: s.props.w, h: s.props.h}));
     window.__cam = () => editor.getCamera();
     editor.user.updateUserPreferences({ colorScheme: 'light' });
+    setMountedEditor(editor);
 
     const seenIds = new Set(editor.getCurrentPageShapes().map(s => s.id));
+    const imagePositions = new Map();
+    for (const s of editor.getCurrentPageShapes()) {
+      if (s.type === 'ai-image') imagePositions.set(s.id, { x: s.x, y: s.y });
+    }
     editor.store.listen(() => {
       const current = editor.getCurrentPageShapes();
       for (const shape of current) {
@@ -1432,39 +1690,16 @@ function TldrawApp() {
           }
         }
       }
+      syncAnnotationsToImages(editor, imagePositions);
       debouncedSync();
       refreshFilesRail();
     }, { scope: 'document' });
 
     fetch(canvasUrl('/api/state')).then((r) => r.json()).then((srv) => {
-      const serverShapes = Object.values(srv.shapes || {});
-      for (const s of serverShapes) {
-        const tid = createShapeId(s.id);
-        if (!editor.getShape(tid)) {
-          applyServerShape(editor, 'create_ai_image_holder', { shape: s });
-        }
-        if (s.image_url) {
-          applyServerShape(editor, 'fill_ai_image_holder', {
-            shape_id: s.id,
-            image_url: s.image_url,
-            image_meta: s.image_meta || {},
-            version: s.version,
-            prompt: s.prompt,
-            w: s.w,
-            h: s.h,
-          });
-        }
-      }
-      const serverIds = new Set(serverShapes.map(s => s.id));
-      for (const sh of editor.getCurrentPageShapes()) {
-        if (sh.type === 'ai-image' && sh.id.startsWith('shape:ai_')) {
-          const logicalId = sh.id.replace('shape:', '');
-          if (!serverIds.has(logicalId)) {
-            editor.deleteShape(sh.id);
-          }
-        }
-      }
+      hydrateFromServer(editor, srv);
     }).catch((e) => console.warn('hydrate failed', e));
+
+    startSyncLoop();
 
     setTimeout(() => {
       postSync();
@@ -1475,16 +1710,18 @@ function TldrawApp() {
   };
 
   return (
-    <Tldraw
-      shapeUtils={AI_SHAPE_UTIL}
-      onMount={onMount}
-      hideUi={false}
-      inferDarkMode={false}
-      cameraOptions={{ panSpeed: 0.5, zoomSpeed: 0.5, isLocked: false, wheelBehavior: 'pan', inertia: 0.5 }}
-      persistenceKey={'tldraw-' + CANVAS_ID}
-    >
-      <HoverHandle />
-    </Tldraw>
+    <>
+      <Tldraw
+        shapeUtils={AI_SHAPE_UTIL}
+        onMount={onMount}
+        hideUi={false}
+        inferDarkMode={false}
+        cameraOptions={{ panSpeed: 0.5, zoomSpeed: 0.5, isLocked: false, wheelBehavior: 'pan', inertia: 0.5 }}
+        persistenceKey={'tldraw-' + CANVAS_ID}
+      />
+      {mountedEditor && <HoverHandle editor={mountedEditor} />}
+      {mountedEditor && <AiImageToolbar editor={mountedEditor} />}
+    </>
   );
 }
 
@@ -1534,6 +1771,7 @@ function mount() {
       <span class="dot" style="background:#ef4444"></span> 批注
     </button>
     <button class="cw-pill" id="cw-fit" title="把所有 shapes 适配进视图">适配</button>
+    <button class="cw-pill" id="cw-refresh" title="立即从服务器同步最新画布状态">刷新</button>
     <button class="cw-pill amber" id="cw-anno-note" title="在选中 AI Image 下方新建一个可编辑 text shape,直接打字写备注">
       <span class="dot" style="background:#1a1a1a"></span> 备注
     </button>
@@ -1587,8 +1825,8 @@ function mount() {
       <button class="cw-codex-action" id="cw-action-gen-v2">
         <span class="ico">⟳</span>
         <div>
-          <div class="label">Edit Image From Annotations → v2</div>
-          <div class="desc">基于批注重生成 v2</div>
+          <div class="label">Edit Image From Annotations → 下一版</div>
+          <div class="desc">基于批注重生成下一个版本</div>
         </div>
       </button>
       <button class="cw-codex-action" id="cw-action-reset">
@@ -1617,6 +1855,15 @@ function mount() {
   });
   document.getElementById('cw-fit')?.addEventListener('click', () => {
     if (editorRef) frameAllShapes(editorRef);
+  });
+
+  document.getElementById('cw-refresh')?.addEventListener('click', () => {
+    if (window.__promptCanvasRefresh) {
+      window.__promptCanvasRefresh();
+      toast('已同步画布状态');
+    } else {
+      toast('画布还没准备好');
+    }
   });
 
   document.getElementById('cw-anno-note')?.addEventListener('click', () => {
@@ -1762,7 +2009,6 @@ function mount() {
   });
 
   setupCodexConsole();
-  startSse();
   refreshFilesRail();
   setInterval(refreshFilesRail, 5000);
 }

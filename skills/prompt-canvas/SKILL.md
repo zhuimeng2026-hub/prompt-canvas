@@ -7,7 +7,7 @@ description: Drive the local Prompt Canvas from Codex for visual AI image iterat
 
 Prompt Canvas is a local-first infinite canvas for visual AI image iteration. The user opens the canvas URL in the Codex in-app browser, drops "AI Image" placeholder frames, asks Codex to fill them with generated images, and then draws annotations (red arrows, scribbles, text) directly on top of the image to request changes. Codex reads those annotations as structured, spatially-aware instructions and regenerates.
 
-The whole system is local. The canvas is a tldraw-based board served on `http://127.0.0.1:47321`, state is persisted to SQLite (`.cowart.db`) and project-local `canvas/pages/<page>/prompt-canvas.json`, and Codex talks to it through MCP tools.
+The whole system is local. The canvas is a tldraw-based board served on `http://127.0.0.1:52846`, state is persisted to SQLite (`.cowart.db`) and project-local `canvas/pages/<page>/prompt-canvas.json`, and Codex talks to it through MCP tools.
 
 ## Critical rule
 
@@ -15,7 +15,7 @@ The whole system is local. The canvas is a tldraw-based board served on `http://
 
 ## Mental model
 
-- The canvas lives at `http://127.0.0.1:47321/?canvas=<id>`. Each Codex thread should usually have its own canvas id.
+- The canvas lives at `http://127.0.0.1:52846/?canvas=<id>`. Each Codex thread should usually have its own canvas id.
 - Everything on the canvas is a *shape*. The shape type that matters for image generation is:
   - `ai-image` — a framed box that can hold a generated image. It has `version` (v1, v2, ...), `label`, `w`, `h`, and optionally `image_url` when filled.
 - The user draws annotations on top of an `ai-image` using tldraw's native tools (draw, arrow, text, geo). Those shapes get `meta.role = "annotation"` and `meta.target = <ai-image-id>`.
@@ -23,12 +23,12 @@ The whole system is local. The canvas is a tldraw-based board served on `http://
 
 ## Required setup (one time)
 
-1. Start the Prompt Canvas server. It serves the UI + REST API on port 47321:
+1. Start the Prompt Canvas server. It serves the UI + REST API on port 52846:
    ```bash
    cd <project root>
    ./scripts/start-canvas.sh /path/to/your/codex-project
    ```
-2. Have the user open `http://127.0.0.1:47321/` in the Codex in-app browser so they can see the board. If `prompt_canvas_open` reports the server is unreachable, start it with the command above.
+2. Have the user open `http://127.0.0.1:52846/` in the Codex in-app browser so they can see the board. If `prompt_canvas_open` reports the server is unreachable, start it with the command above.
 3. The MCP server (`mcp-server/prompt_canvas_mcp.py`) must be registered with Codex:
    ```bash
    codex mcp add prompt-canvas -- python3 $(pwd)/mcp-server/prompt_canvas_mcp.py
@@ -57,8 +57,8 @@ The user has already created or selected an `ai-image` shape and asks Codex to g
    }
    ```
 6. **Open the canvas for the user.** Call `prompt_canvas_open` to get the canvas URL, then present it clearly:
-   > "图片已放入画布，打开链接查看：http://127.0.0.1:47321/?canvas=<canvas_id>"
-   - If the user already has the canvas open in the Codex in-app browser, refresh that tab or open the URL again so the new image appears.
+   > "图片已放入画布，打开链接查看：http://127.0.0.1:52846/?canvas=<canvas_id>"
+   - The canvas will auto-sync via SSE and polling; if the user already has the canvas open, the new image should appear within a few seconds without manual refresh. Only ask them to refresh if it does not show up.
 7. **Report back** with the shape id, final size, image URL, prompt, and the canvas URL.
 
 ### B. Iterating on a generated image with annotations
@@ -77,7 +77,7 @@ The user looks at the generated image, scribbles arrows / text / circles on top 
    The response contains `markdown` — a spatially-aware instruction list. Copy it verbatim into the image-generation prompt.
 2. **Resolve the v1 source image to a local file.** Look at the source `ai-image` shape's `image_url` (from `prompt_canvas_get_state`) and map it to a real file on disk:
    - `/page-assets/<canvas>/<file>` → `canvas/pages/<canvas>/assets/<file>`
-   - `/generated/<canvas>/<file>`   → `generated/<canvas>/<file>`
+   - Legacy `/generated/<canvas>/<file>` URLs redirect to `/page-assets/<canvas>/<file>`.
    If the shape has no `image_url`, it was never filled — stop and ask the user which image to base v2 on.
 3. **Turn the v1 file into a reference the generator can fetch.** The image generators send the reference over the network, so a local path or a `127.0.0.1` URL will NOT work. Convert the v1 file to a base64 data URI:
    ```bash
@@ -110,7 +110,7 @@ The user looks at the generated image, scribbles arrows / text / circles on top 
      "source_id": "<v1 shape id>"
    }
    ```
-8. **Open/refresh the canvas URL** so the user sees the new v2 next to v1.
+8. **Open the canvas URL** so the user sees the new v2 next to v1. The canvas auto-syncs, so a manual refresh is usually unnecessary.
 9. **Report back** with both shape ids (source v1 and new v2), confirmation that v1 was used as the reference image, the prompt, the image URL, and the canvas URL.
 
 ### C. Starting from scratch (no shapes yet)
@@ -119,7 +119,7 @@ If the canvas is empty and the user says "draw me a hero shot of a samurai cat":
 
 1. `prompt_canvas_create_ai_image_holder` with a reasonable default size (e.g. 720×960 portrait, 720×720 square, 960×720 landscape).
 2. Generate the image, move it into `canvas/pages/<canvas>/assets/`, and fill the holder (workflow A steps 3-5).
-3. **Always open the canvas URL** and report it to the user, even if this is the very first image.
+3. **Always open the canvas URL** and report it to the user, even if this is the very first image. The canvas auto-syncs, so the image should appear shortly without requiring a manual refresh.
 
 ### D. Inserting a standalone image
 
@@ -137,7 +137,7 @@ When there is no AI Image holder selected, or the user wants a revised image bes
      "label": "v2 revised"
    }
    ```
-2. Open/refresh the canvas URL.
+2. Open the canvas URL. The canvas will auto-sync the new image.
 
 ### E. Processing a canvas submit (when the user clicked "Submit to Codex")
 
@@ -183,7 +183,7 @@ When the Browser plugin's `control-in-app-browser` skill is available, open the 
      if (!String(e?.message ?? e).includes("No active tab")) throw e;
    }
    globalThis.tab = selectedTab ?? await browser.tabs.new();
-   const url = "http://127.0.0.1:47321/?canvas=<canvas_id>";
+   const url = "http://127.0.0.1:52846/?canvas=<canvas_id>";
    if ((await tab.url()) !== url) await tab.goto(url);
    ```
    If browser control is unavailable, fall back to returning the local URL to the user.

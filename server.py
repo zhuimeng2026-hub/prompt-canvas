@@ -17,7 +17,7 @@ Endpoints
 - GET  /api/canvas                  list all canvases
 - POST /api/sync                    browser pushes tldraw snapshot (scoped to canvas)
 - POST /api/commands                Codex issues a command (scoped to canvas)
-- GET  /generated/<path:rel>        serve a generated image (any canvas subdir)
+- GET  /generated/<path:rel>        legacy redirect to /page-assets/<path:rel>
 - GET  /page-assets/<page>/<file>   serve project-local page assets
 - GET  /api/events                  SSE stream
 """
@@ -38,11 +38,36 @@ from flask import Flask, Response, abort, jsonify, redirect, request, send_from_
 
 from imagegen import generate as imagegen_generate
 
+
+def _load_env_file():
+    """Load .env if present, otherwise .env.example. Existing env vars win."""
+    root = Path(__file__).parent
+    for name in (".env", ".env.example"):
+        path = root / name
+        if path.exists():
+            try:
+                with path.open("r", encoding="utf-8") as f:
+                    for raw in f:
+                        line = raw.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        if "=" not in line:
+                            continue
+                        key, value = line.split("=", 1)
+                        key = key.strip()
+                        value = value.strip().strip('"').strip("'")
+                        if key and key not in os.environ:
+                            os.environ[key] = value
+            except OSError:
+                pass
+            break
+
+
+_load_env_file()
+
 ROOT = Path(__file__).parent
 DB_PATH = ROOT / ".cowart.db"
 SCHEMA_PATH = ROOT / "prompt_canvas_schema.sql"
-GENERATED_DIR = ROOT / "generated"
-GENERATED_DIR.mkdir(exist_ok=True)
 
 # Project-local canvas directory (Codex plugin mode).
 PROJECT_DIR = Path(os.environ.get("PROMPT_CANVAS_PROJECT_DIR") or ROOT)
@@ -176,7 +201,11 @@ def _natural_size(image_url: str):
         return None, None, None
     try:
         from PIL import Image as _PIL
-        p = ROOT / image_url.lstrip("/")
+        if image_url.startswith("/page-assets/"):
+            rel = image_url[len("/page-assets/"):]
+            p = PAGE_ASSETS_BASE / rel
+        else:
+            p = ROOT / image_url.lstrip("/")
         if not p.exists():
             return None, None, None
         with _PIL.open(p) as im:
@@ -696,15 +725,8 @@ def commands():
             new_w, new_h = _auto_size(prev_url, image_url, row["w"], row["h"], force=bool(args.get("auto_size")))
         version = args.get("version") or row["version"]
         prompt = args.get("prompt") or row["prompt"]
-        # If the URL points to a local generated file, mirror it into page assets.
-        page_url = image_url
-        if image_url and image_url.startswith("/generated/"):
-            rel = image_url[len("/generated/"):]
-            src = GENERATED_DIR / rel
-            if src.exists():
-                copied = _copy_to_page_assets(cid, src, src.name)
-                if copied:
-                    page_url = f"/page-assets/{cid}/{src.name}"
+        # Normalize legacy /generated/ URLs to /page-assets/.
+        page_url = image_url.replace("/generated/", "/page-assets/", 1) if image_url and image_url.startswith("/generated/") else image_url
         with _lock:
             con.execute(
                 """UPDATE images SET
@@ -749,12 +771,7 @@ def commands():
                 if copied:
                     page_url = f"/page-assets/{cid}/{copied.name}"
         elif image_url and image_url.startswith("/generated/"):
-            rel = image_url[len("/generated/"):]
-            src_path = GENERATED_DIR / rel
-            if src_path.exists():
-                copied = _copy_to_page_assets(cid, src_path, file_name or src_path.name)
-                if copied:
-                    page_url = f"/page-assets/{cid}/{copied.name}"
+            page_url = image_url.replace("/generated/", "/page-assets/", 1)
 
         natural_w, natural_h, aspect_ratio = _natural_size(page_url) if page_url else (None, None, None)
         if page_url and args.get("auto_size"):
@@ -809,18 +826,14 @@ def commands():
             buf = imagegen_generate(prompt=prompt, style=style, width=width, height=height, refs=refs)
         except Exception as e:
             return jsonify({"ok": False, "error": f"imagegen: {e}"}), 500
-        # save into legacy canvas dir
-        canvas_dir = GENERATED_DIR / cid
-        canvas_dir.mkdir(parents=True, exist_ok=True)
+        # Save directly into project-local page assets
+        assets_dir = _page_assets_dir(cid)
         ts = int(time.time() * 1000)
         stem = f"gen-{ts}-{uuid.uuid4().hex[:6]}"
         fname = f"{stem}.jpg"
-        (canvas_dir / fname).write_bytes(buf)
-        url = f"/generated/{cid}/{fname}"
-        # also mirror to project-local page assets
-        copied = _copy_to_page_assets(cid, canvas_dir / fname, fname)
-        if copied:
-            url = f"/page-assets/{cid}/{fname}"
+        fpath = assets_dir / fname
+        fpath.write_bytes(buf)
+        url = f"/page-assets/{cid}/{fname}"
         meta = {"prompt": prompt, "style": style, "width": width, "height": height, "size_bytes": len(buf)}
         result = {"ok": True, "image_url": url, "image_meta": meta, "canvas_id": cid}
         _broadcast("image_generated", result)
@@ -890,7 +903,7 @@ def submit_pending():
     """
     cid = _resolve_canvas()
     payload = request.get_json(force=True, silent=True) or {}
-    pending_dir = GENERATED_DIR / cid / "_pending"
+    pending_dir = _page_dir(cid) / "_pending"
     pending_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
     md_path = pending_dir / f"submit-{ts}.md"
@@ -908,8 +921,8 @@ def submit_pending():
     return jsonify({
         "ok": True,
         "canvas_id": cid,
-        "md_path": f"/generated/{cid}/_pending/submit-{ts}.md",
-        "json_path": f"/generated/{cid}/_pending/submit-{ts}.json",
+        "md_path": f"/page-assets/{cid}/_pending/submit-{ts}.md",
+        "json_path": f"/page-assets/{cid}/_pending/submit-{ts}.json",
         "ts": ts,
     })
 
@@ -918,7 +931,7 @@ def submit_pending():
 def list_pending():
     """List pending submit requests for a canvas. For Codex to poll."""
     cid = _resolve_canvas()
-    pending_dir = GENERATED_DIR / cid / "_pending"
+    pending_dir = _page_dir(cid) / "_pending"
     if not pending_dir.exists():
         return jsonify({"canvas_id": cid, "items": []})
     items = []
@@ -926,8 +939,8 @@ def list_pending():
         meta = p.with_suffix(".json")
         items.append({
             "ts": p.stem.replace("submit-", ""),
-            "md_path": f"/generated/{cid}/_pending/{p.name}",
-            "json_path": f"/generated/{cid}/_pending/{meta.name}" if meta.exists() else None,
+            "md_path": f"/page-assets/{cid}/_pending/{p.name}",
+            "json_path": f"/page-assets/{cid}/_pending/{meta.name}" if meta.exists() else None,
             "size": p.stat().st_size,
         })
     return jsonify({"canvas_id": cid, "items": items})
@@ -937,7 +950,7 @@ def list_pending():
 def mark_submit_done(ts):
     """Mark a pending submit request as processed by moving it to _pending/_done/."""
     cid = _resolve_canvas()
-    pending_dir = GENERATED_DIR / cid / "_pending"
+    pending_dir = _page_dir(cid) / "_pending"
     done_dir = pending_dir / "_done"
     done_dir.mkdir(parents=True, exist_ok=True)
     md_src = pending_dir / f"submit-{ts}.md"
@@ -958,14 +971,24 @@ def mark_submit_done(ts):
 
 @app.get("/generated/<path:rel>")
 def generated(rel):
-    """Serve any file under generated/ (preserves canvas_id subdir)."""
+    """Legacy redirect to /page-assets/<rel>."""
     # Prevent path traversal
-    safe = (GENERATED_DIR / rel).resolve()
-    if not str(safe).startswith(str(GENERATED_DIR.resolve())):
+    safe = (PAGE_ASSETS_BASE / rel).resolve()
+    if not str(safe).startswith(str(PAGE_ASSETS_BASE.resolve())):
+        return jsonify({"ok": False, "error": "bad path"}), 400
+    return redirect(f"/page-assets/{rel}", code=308)
+
+
+@app.get("/page-assets/<page_id>/_pending/<path:fname>")
+def page_pending_assets(page_id, fname):
+    """Serve project-local pending submit files."""
+    base = (_page_dir(page_id) / "_pending").resolve()
+    safe = (base / fname).resolve()
+    if not str(safe).startswith(str(base)):
         return jsonify({"ok": False, "error": "bad path"}), 400
     if not safe.exists():
         return jsonify({"ok": False, "error": "not found"}), 404
-    return send_from_directory(GENERATED_DIR, rel)
+    return send_from_directory(base, fname)
 
 
 @app.get("/page-assets/<page_id>/<path:fname>")
@@ -1009,6 +1032,6 @@ def events():
 
 if __name__ == "__main__":
     host = os.environ.get("PROMPT_CANVAS_HOST", "127.0.0.1")
-    port = int(os.environ.get("PROMPT_CANVAS_PORT", "47321"))
+    port = int(os.environ.get("PROMPT_CANVAS_PORT", "52846"))
     print(f"Prompt Canvas running on http://{host}:{port}")
     app.run(host=host, port=port, threaded=True, debug=False)
