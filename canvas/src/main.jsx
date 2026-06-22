@@ -10,6 +10,8 @@ import {
   BaseBoxShapeUtil,
   HTMLContainer,
   createShapeId,
+  DefaultColorStyle,
+  DefaultSizeStyle,
 } from 'tldraw';
 import './styles.css';
 
@@ -701,7 +703,12 @@ let annotationModeText = '';
 async function copyText(text) {
   if (navigator.clipboard && navigator.clipboard.writeText) {
     try {
-      await navigator.clipboard.writeText(text);
+      // Some in-app browsers (e.g. Codex) expose clipboard but never resolve.
+      // Race against a short timeout so the submit flow never hangs.
+      await Promise.race([
+        navigator.clipboard.writeText(text),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('clipboard timeout')), 500))
+      ]);
       return { ok: true };
     } catch (e) {}
   }
@@ -1673,6 +1680,9 @@ function TldrawApp() {
     window.__shapes = () => editor.getCurrentPageShapes().map(s => ({id: s.id, type: s.type, x: s.x, y: s.y, w: s.props.w, h: s.props.h}));
     window.__cam = () => editor.getCamera();
     editor.user.updateUserPreferences({ colorScheme: 'light' });
+    // Default shape styles: red strokes/lines and large text.
+    editor.setStyleForNextShapes(DefaultColorStyle, 'red');
+    editor.setStyleForNextShapes(DefaultSizeStyle, 'l');
     setMountedEditor(editor);
 
     const seenIds = new Set(editor.getCurrentPageShapes().map(s => s.id));
@@ -1963,39 +1973,32 @@ function mount() {
 
   document.getElementById('cw-submit')?.addEventListener('click', async () => {
     try {
+      console.log('[cw-submit] click');
+      toast('正在提交...');
       if (!editorRef) { toast('画布还没准备好'); return; }
       const payload = buildSubmitPayload(editorRef);
+      console.log('[cw-submit] payload', payload ? 'ok' : 'null');
       if (!payload) {
         toast('画布里没有 AI Image,先把图拖进来');
         return;
       }
-      if (!payload.notes || payload.notes.length === 0) {
-        const hint = payload.references && payload.references.length
-          ? 'v' + payload.target.version.replace('v','') + ' 用参考图重新画图...'
-          : 'v' + (parseInt((payload.next_version || 'v2').replace('v',''), 10)) + ' ...';
-        const note = window.prompt('画布里没有 text 备注。直接打字加一行 (留空则不写备注):', hint);
-        if (note && note.trim()) {
-          payload.notes = [{ text: note.trim(), source: 'prompt' }];
-          const lines = payload.md.split('\n');
-          const insertAt = lines.findIndex(l => l.startsWith('请生成'));
-          const block = '\n备注 (1):\n- ' + note.trim() + '\n';
-          if (insertAt >= 0) lines.splice(insertAt, 0, block);
-          else lines.push(block);
-          for (let i = 0; i < lines.length; i++) {
-            if (lines[i].startsWith('- 应用上述备注中的修改方向')) { lines.splice(i, 1); break; }
-          }
-          payload.md = lines.join('\n');
-        }
-      }
+      // Notes are optional: annotations alone are enough to drive a revision.
+      // Do not block the submit flow with a browser prompt (Codex in-app browser may suppress it).
       const md = payload.md;
+      console.log('[cw-submit] copying md');
       const copyRes = await copyText(md);
+      console.log('[cw-submit] copy result', copyRes);
       const copied = copyRes.ok;
-      const r = await fetch(canvasUrl('/api/submit'), {
+      const url = canvasUrl('/api/submit');
+      console.log('[cw-submit] posting to', url);
+      const r = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
+      console.log('[cw-submit] response status', r.status);
       const data = await r.json();
+      console.log('[cw-submit] response data', data);
       if (data.ok) {
         logLine('sys', '已提交给 Codex: ' + data.md_path);
         toast(copied ? '已复制+已提交' : '已提交 (复制失败,请手动复制)');
@@ -2003,7 +2006,7 @@ function mount() {
         toast('提交失败: ' + (data.error || 'unknown'));
       }
     } catch (e) {
-      console.error('[cw-submit]', e);
+      console.error('[cw-submit] error', e);
       toast('提交出错: ' + (e.message || e));
     }
   });

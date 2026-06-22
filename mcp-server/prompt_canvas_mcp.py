@@ -55,7 +55,7 @@ _PORT = os.environ.get("PROMPT_CANVAS_PORT", "52846")
 BASE_URL = os.environ.get("PROMPT_CANVAS_BASE_URL", f"http://{_HOST}:{_PORT}").rstrip("/")
 DEFAULT_CANVAS = os.environ.get("PROMPT_CANVAS_CANVAS_ID", "")
 SERVER_NAME = "prompt-canvas"
-SERVER_VERSION = "0.2.0"
+SERVER_VERSION = "0.3.0"
 
 
 # ---------- HTTP helper ----------
