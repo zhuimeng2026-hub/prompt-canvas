@@ -105,11 +105,14 @@ fi
 log "--- Step 5: 运行 Codex 生图测试 ---"
 log "开始 codex exec (timeout=5min)..."
 
+# 设置 OPENAI_BASE_URL 让 Codex image_gen CLI fallback 走 proxy 的 images 透传
+export OPENAI_BASE_URL="http://127.0.0.1:9790/v1"
+
 CODEX_OUTPUT=$(timeout 300 codex exec \
   -s danger-full-access \
   --cd "$PROJECT_DIR" \
   --skip-git-repo-check \
-  "生成一张简单的测试图片（风景或食物均可），放到 Prompt Canvas 画布上。完成后告诉我画布链接。" \
+  "使用 image_gen CLI fallback 模式生成一张真实的测试图片（风景或食物均可），命令示例：python3 \$IMAGE_GEN generate --prompt \"...\" --size 1024x1024 --quality low --out output/imagegen/test.png。生成后把图片复制到 Prompt Canvas 画布的 assets 目录，用 MCP 工具 prompt_canvas_create_ai_image_holder 和 prompt_canvas_fill_ai_image_holder 放到画布上。完成后告诉我画布链接。" \
   2>&1) || true
 
 log "--- Codex 输出开始 ---"
