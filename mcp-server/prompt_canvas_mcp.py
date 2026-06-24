@@ -562,8 +562,9 @@ def handle_message(msg: dict) -> dict | None:
     params = msg.get("params") or {}
 
     if method == "initialize":
+        client_version = params.get("protocolVersion", "2024-11-05")
         return _ok(req_id, {
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": client_version,
             "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
             "capabilities": {"tools": {"listChanged": False}},
         })
@@ -588,6 +589,9 @@ def handle_message(msg: dict) -> dict | None:
         except Exception as e:
             return _ok(req_id, _tool_result(f"tool '{name}' crashed: {e}", is_error=True))
         return _ok(req_id, _tool_result(json.dumps(result, ensure_ascii=False, indent=2)))
+
+    if method == "resources/templates/list":
+        return _ok(req_id, {"resourceTemplates": []})
 
     if method in ("resources/list", "resources/read", "prompts/list", "prompts/get"):
         if method.endswith("/list"):
