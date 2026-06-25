@@ -636,6 +636,7 @@ function startArrowDrag(editor, sourceShape, clientX, clientY) {
 // -------------------------------------------------------------
 const SERVER_ORIGIN = window.location.origin;
 const CANVAS_ID = new URLSearchParams(window.location.search).get('canvas') || 'imported';
+const CODEX_MODE = new URLSearchParams(window.location.search).has('codex');
 const TLDRAW_DB_PREFIX = 'TLDRAW_DOCUMENT_v2';
 const tldrawDbName = () => TLDRAW_DB_PREFIX + 'tldraw-' + CANVAS_ID;
 const SHAPE_ID_ARRAY_FIELDS = ['selectedShapeIds', 'erasingShapeIds', 'lockedShapeIds', 'scribbleLockedShapeIds', 'bindingIds'];
@@ -1730,6 +1731,75 @@ function setupCodexConsole() {
     }
   });
 
+  document.getElementById('cw-action-refine')?.addEventListener('click', async () => {
+    // Collect ALL annotations and text notes from the canvas
+    const shapes = editorRef.getCurrentPageShapes();
+    const annTexts = [];
+    const noteTexts = [];
+    for (const s of shapes) {
+      const meta = s.meta || {};
+      if (meta.role === 'annotation') {
+        const text = meta.text || getPlainText(s) || '';
+        if (text.trim()) annTexts.push(text.trim());
+      }
+      if (s.type === 'text') {
+        const text = getPlainText(s) || '';
+        if (text.trim()) noteTexts.push(text.trim());
+      }
+    }
+    // Collect prompts from existing AI images
+    const aiImages = shapes.filter(s => s.type === 'ai-image');
+    const basePrompts = aiImages.map(s => (s.props.prompt || '').trim()).filter(Boolean);
+    const basePrompt = basePrompts[basePrompts.length - 1] || '';
+
+    const allFeedback = [...annTexts, ...noteTexts];
+    const refinedPrompt = allFeedback.length
+      ? `${basePrompt ? basePrompt + '。' : ''}根据以下要求绘制: ${allFeedback.join('; ')}`
+      : basePrompt;
+    if (!refinedPrompt) { toast('画布上没有标注、备注或 prompt'); return; }
+
+    logLine('info', `收集到 ${annTexts.length} 条标注, ${noteTexts.length} 条备注`);
+    logLine('info', `生成 prompt: ${refinedPrompt.slice(0, 100)}...`);
+    toast('正在生成...');
+
+    // Create a new holder
+    const lastImg = aiImages[aiImages.length - 1];
+    const x = lastImg ? lastImg.x + (lastImg.props.w || 360) + 80 : 200;
+    const y = lastImg ? lastImg.y : 200;
+    const w = lastImg ? Math.round(lastImg.props.w) || 1024 : 1024;
+    const h = lastImg ? Math.round(lastImg.props.h) || 1024 : 1024;
+    const holder = await codexCommand('create_ai_image_holder', {
+      x, y, w, h, label: 'AI Image',
+      meta: { prompt: refinedPrompt },
+    });
+    if (!holder.ok) { toast('创建 holder 失败'); return; }
+    applyServerShape(editorRef, 'create_ai_image_holder', holder);
+    const sid = holder.shape?.id || holder.shape_id;
+
+    // Generate image
+    const gen = await codexCommand('generate_image', { prompt: refinedPrompt, width: w, height: h });
+    if (gen.ok) {
+      const fill = await codexCommand('fill_ai_image_holder', {
+        shape_id: sid,
+        image_url: gen.image_url,
+        image_meta: gen.image_meta,
+        prompt: refinedPrompt,
+      });
+      if (fill.ok) {
+        applyServerShape(editorRef, 'fill_ai_image_holder', fill);
+        refreshFilesRail();
+        toast('已生成新图片');
+        logLine('ok', '生成完成');
+        // Frame the new image
+        const newShape = editorRef.getCurrentPageShapes().find(s => s.id === createShapeId(sid));
+        if (newShape) { editorRef.select(newShape.id); frameShape(editorRef, newShape); }
+      }
+    } else {
+      toast('生成失败: ' + (gen.error || 'unknown'));
+      logLine('err', '生成失败: ' + (gen.error || ''));
+    }
+  });
+
   document.getElementById('cw-action-reset')?.addEventListener('click', async () => {
     if (!confirm('重置画布？所有 AI Image 和批注将被清除。')) return;
     await codexCommand('reset', {});
@@ -1859,17 +1929,18 @@ function mount() {
     <button class="cw-pill" id="cw-copy-anno-md" title="复制当前选中 AI Image 的结构化批注指令到剪贴板">
       <span class="dot" style="background:#22c55e"></span> 复制批注指令
     </button>
+    ${CODEX_MODE ? `
     <button class="cw-pill" id="cw-submit" title="把画布上的目标图 + 引用图 + 备注打包,提交给 Codex">
       <span class="dot" style="background:#FFB020"></span> 提交给 Codex
-    </button>
+    </button>` : ''}
     <button class="cw-pill" id="cw-toggle-files" title="展开 / 收起左侧 FILES 列表">
       <span class="dot" style="background:#6b6b6b"></span> FILES
     </button>
     <button class="cw-pill" id="cw-purge-local" title="清掉当前画布的 tldraw 本地缓存(任何坏状态一键修复)→ 然后自动从服务器重新加载">
       <span class="dot" style="background:#ef4444"></span> 清本地
     </button>
-    <button class="cw-pill" id="cw-collapse-codex" title="折叠 / 展开右侧 Codex 控制台">
-      <span class="dot" style="background:#1a73e8"></span> 折叠 Codex
+    <button class="cw-pill" id="cw-collapse-codex" title="折叠 / 展开右侧控制台">
+      <span class="dot" style="background:#1a73e8"></span> 折叠面板
     </button>
   `;
 
@@ -1908,6 +1979,13 @@ function mount() {
         <div>
           <div class="label">Edit Image From Annotations → 下一版</div>
           <div class="desc">基于批注重生成下一个版本</div>
+        </div>
+      </button>
+      <button class="cw-codex-action" id="cw-action-refine">
+        <span class="ico" style="background:#8b5cf6;color:#fff">✦</span>
+        <div>
+          <div class="label">根据标注生成新图</div>
+          <div class="desc">收集画布上所有标注和备注，生成一张新图片</div>
         </div>
       </button>
       <button class="cw-codex-action" id="cw-action-reset">
@@ -2014,8 +2092,8 @@ function mount() {
     const btn = document.getElementById('cw-collapse-codex');
     if (btn) {
       btn.innerHTML = collapsed
-        ? '<span class="dot" style="background:#1a73e8"></span> 展开 Codex'
-        : '<span class="dot" style="background:#1a73e8"></span> 折叠 Codex';
+        ? '<span class="dot" style="background:#1a73e8"></span> 展开面板'
+        : '<span class="dot" style="background:#1a73e8"></span> 折叠面板';
     }
     setTimeout(() => { try { postSync(); } catch (e) {} }, 50);
   });
