@@ -46,9 +46,17 @@ class AiImageShape extends BaseBoxShapeUtil {
       <HTMLContainer style={{ width: w + 'px', height: h + 'px', pointerEvents: 'all', position: 'relative' }}>
         <div className={'cw-ai-image' + ((shape.meta && shape.meta._annoTarget) ? ' cw-anno-target' : '')} style={{ width: w + 'px', height: h + 'px', position: 'relative' }}>
           {displayUrl ? (
-            <img src={displayUrl} alt={displayLabel}
-                 style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                 draggable={false} />
+            <>
+              <img src={displayUrl} alt={displayLabel}
+                   style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', opacity: status === 'loading' ? 0.4 : 1 }}
+                   draggable={false} />
+              {status === 'loading' && (
+                <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.3)', zIndex: 2 }}>
+                  <div className="cw-ai-spinner" />
+                  <div style={{ color: '#fff', fontSize: 13, marginTop: 8 }}>生成中…</div>
+                </div>
+              )}
+            </>
           ) : (
             <div className="cw-ai-placeholder">
               <div className="cw-ai-placeholder-inner">
@@ -351,6 +359,36 @@ function AiImageToolbar({ editor }) {
     spawnImageChild(editor, target);
   };
 
+  const handleEditPrompt = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const newPrompt = await promptModal('编辑提示词并重新生成', prompt);
+    if (!newPrompt || !newPrompt.trim()) return;
+    const sid = target.id.replace('shape:', '');
+    const width = Math.round(target.props.w) || 1024;
+    const height = Math.round(target.props.h) || 1024;
+    // Show loading overlay
+    editor.updateShape({ id: target.id, type: 'ai-image', props: { ...target.props, status: 'loading' } });
+    toast('正在生成...');
+    const gen = await codexCommand('generate_image', { prompt: newPrompt.trim(), width, height });
+    if (gen.ok) {
+      const fill = await codexCommand('fill_ai_image_holder', {
+        shape_id: sid,
+        image_url: gen.image_url,
+        image_meta: gen.image_meta,
+        prompt: newPrompt.trim(),
+      });
+      if (fill.ok) {
+        applyServerShape(editor, 'fill_ai_image_holder', { ...fill, status: 'ready' });
+        toast('已重新生成');
+      }
+    } else {
+      // Restore to ready state on failure
+      editor.updateShape({ id: target.id, type: 'ai-image', props: { ...target.props, status: 'ready' } });
+      toast('生成失败: ' + (gen.error || 'unknown'));
+    }
+  };
+
   const handleDownload = async (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -392,6 +430,9 @@ function AiImageToolbar({ editor }) {
             <polyline points="7 10 12 15 17 10" />
             <line x1="12" y1="15" x2="12" y2="3" />
           </svg>
+        </button>
+        <button className="cw-ai-toolbar-btn" onClick={handleEditPrompt} title="编辑提示词并重新生成" style={{fontSize:11,padding:'0 6px'}}>
+          EDIT
         </button>
         <button className="cw-ai-toolbar-btn cw-ai-toolbar-alt" onClick={handleAlt} title="查看 Prompt">
           ALT
@@ -1492,6 +1533,36 @@ async function codexCommand(action, args) {
 // -------------------------------------------------------------
 // Codex console actions
 // -------------------------------------------------------------
+function promptModal(title, defaultText) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10000;display:flex;align-items:center;justify-content:center;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#1a1a1a;border-radius:12px;padding:24px;min-width:420px;max-width:600px;box-shadow:0 20px 60px rgba(0,0,0,0.5);';
+    box.innerHTML = `
+      <div style="color:#fff;font-size:15px;font-weight:600;margin-bottom:12px;">${title}</div>
+      <textarea id="cw-prompt-input" style="width:100%;height:160px;background:#0D1B2A;color:#e0e0e0;border:1px solid #333;border-radius:8px;padding:12px;font-size:14px;font-family:system-ui,sans-serif;resize:vertical;outline:none;" placeholder="输入提示词..."></textarea>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px;">
+        <button id="cw-prompt-cancel" style="padding:8px 20px;border-radius:6px;border:1px solid #444;background:transparent;color:#aaa;cursor:pointer;font-size:13px;">取消</button>
+        <button id="cw-prompt-ok" style="padding:8px 20px;border-radius:6px;border:none;background:#3b82f6;color:#fff;cursor:pointer;font-size:13px;font-weight:600;">生成</button>
+      </div>
+    `;
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    const input = box.querySelector('#cw-prompt-input');
+    input.value = defaultText || '';
+    input.focus();
+    input.select();
+    const cleanup = (val) => { document.body.removeChild(overlay); resolve(val); };
+    box.querySelector('#cw-prompt-cancel').onclick = () => cleanup(null);
+    box.querySelector('#cw-prompt-ok').onclick = () => cleanup(input.value);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) cleanup(input.value);
+      if (e.key === 'Escape') cleanup(null);
+    });
+  });
+}
+
 function setupCodexConsole() {
   const annoToggle = document.getElementById('cw-anno-toggle');
   if (annoToggle) {
@@ -1555,7 +1626,7 @@ function setupCodexConsole() {
     if (!target) { toast('请先选中一个 AI Image'); return; }
     let prompt = (target.props.prompt || '').trim();
     if (!prompt) {
-      prompt = window.prompt('该 AI Image 还没有 prompt。请输入要生成的内容:', 'A futuristic AI assistant cover');
+      prompt = await promptModal('请输入生成提示词', 'A futuristic AI assistant cover');
       if (!prompt || !prompt.trim()) { toast('已取消'); return; }
     }
     logLine('sys', 'imagegen → v1...');

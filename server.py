@@ -65,6 +65,53 @@ def _load_env_file():
 
 _load_env_file()
 
+# --- Real image generation API ---
+_IMAGE_API_KEY = os.environ.get("NEWAPI_API_KEY", "")
+_IMAGE_API_BASE = os.environ.get("NEWAPI_BASE_URL", "https://aikey.aixifs.com").rstrip("/")
+_IMAGE_API_MODEL = os.environ.get("NEWAPI_MODEL", "Tongyi-MAI/Z-Image-Turbo")
+
+
+def _call_image_api(prompt: str, size: str = "1024x1024") -> bytes:
+    """Call OpenAI-compatible images/generations API and return image bytes."""
+    import urllib.request
+    import urllib.error
+
+    url = f"{_IMAGE_API_BASE}/v1/images/generations"
+    body = json.dumps({
+        "model": _IMAGE_API_MODEL,
+        "prompt": prompt,
+        "n": 1,
+        "size": size,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(url, data=body, headers={
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {_IMAGE_API_KEY}",
+    })
+
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            raw = resp.read().decode("utf-8")
+            # Gateway may append extra JSON after the response; parse only the first object
+            decoder = json.JSONDecoder()
+            data, _ = decoder.raw_decode(raw)
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"image API HTTP {e.code}: {err_body}")
+
+    # Response: {"data": [{"url": "..."}]} or {"data": [{"b64_json": "..."}]}
+    item = data.get("data", [{}])[0]
+    if item.get("url"):
+        img_req = urllib.request.Request(item["url"])
+        with urllib.request.urlopen(img_req, timeout=60) as img_resp:
+            return img_resp.read()
+    elif item.get("b64_json"):
+        import base64
+        return base64.b64decode(item["b64_json"])
+    else:
+        raise RuntimeError(f"image API returned no image: {json.dumps(data)[:300]}")
+
+
 ROOT = Path(__file__).parent
 DB_PATH = ROOT / ".cowart.db"
 SCHEMA_PATH = ROOT / "prompt_canvas_schema.sql"
@@ -744,7 +791,7 @@ def commands():
         result = {"ok": True, "shape_id": sid, "image_url": page_url,
                   "version": version, "w": new_w, "h": new_h,
                   "natural_w": natural_w, "natural_h": natural_h, "aspect_ratio": aspect_ratio,
-                  "canvas_id": cid}
+                  "prompt": prompt, "canvas_id": cid}
         _broadcast("fill_ai_image_holder", result)
 
     elif action == "insert_image":
@@ -822,19 +869,30 @@ def commands():
         width = int(args.get("width", 720))
         height = int(args.get("height", 960))
         refs = args.get("refs", [])
+        # Determine size for API (must be supported value)
+        size = "1024x1024"
+        if width > height * 1.5:
+            size = "1792x1024"
+        elif height > width * 1.5:
+            size = "1024x1792"
         try:
-            buf = imagegen_generate(prompt=prompt, style=style, width=width, height=height, refs=refs)
+            if _IMAGE_API_KEY:
+                buf = _call_image_api(prompt=prompt, size=size)
+            else:
+                buf = imagegen_generate(prompt=prompt, style=style, width=width, height=height, refs=refs)
         except Exception as e:
             return jsonify({"ok": False, "error": f"imagegen: {e}"}), 500
         # Save directly into project-local page assets
         assets_dir = _page_assets_dir(cid)
         ts = int(time.time() * 1000)
         stem = f"gen-{ts}-{uuid.uuid4().hex[:6]}"
-        fname = f"{stem}.jpg"
+        ext = "png" if _IMAGE_API_KEY else "jpg"
+        fname = f"{stem}.{ext}"
         fpath = assets_dir / fname
         fpath.write_bytes(buf)
         url = f"/page-assets/{cid}/{fname}"
-        meta = {"prompt": prompt, "style": style, "width": width, "height": height, "size_bytes": len(buf)}
+        meta = {"prompt": prompt, "style": style, "width": width, "height": height, "size_bytes": len(buf),
+                "model": _IMAGE_API_MODEL if _IMAGE_API_KEY else "pil"}
         result = {"ok": True, "image_url": url, "image_meta": meta, "canvas_id": cid}
         _broadcast("image_generated", result)
 

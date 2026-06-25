@@ -29,6 +29,7 @@ STYLE_BASES = {
 CN_RE = re.compile(r"[\u4e00-\u9fff]")
 
 FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
     "/System/Library/Fonts/Hiragino Sans GB.ttc",
     "/System/Library/Fonts/STHeiti Medium.ttc",
     "/System/Library/Fonts/PingFang.ttc",
@@ -95,14 +96,17 @@ def _draw_title_v1(img, title, subtitle):
     draw = ImageDraw.Draw(img)
     title_font, sub_font = _load_fonts()
     W, H = img.size
-    # Gold title pinned to top - the 'title too close to edge' flaw
     title = title or "\u62c9\u9762\u4e00\u756a"
     subtitle = subtitle or "\u6d41\u6c64\u73b0\u70e4 \u00b7 \u4e00\u53e3\u5165\u9b42"
     if not _has_cn(title):
         title_font = ImageFont.truetype("/System/Library/Fonts/Georgia.ttf", 80) if os.path.exists("/System/Library/Fonts/Georgia.ttf") else title_font
-    draw.text((W * 0.04, 12), title, font=title_font, fill=(212, 175, 55))  # gold, touching top edge
-    # subtitle in white at lower band
-    draw.text((W * 0.06, H - 90), subtitle, font=sub_font, fill=(245, 245, 240))
+    # Title with margin to avoid clipping
+    margin_x = int(W * 0.04)
+    title, tfont = _fit_text(draw, title, W - 2 * margin_x, title_font)
+    draw.text((margin_x, 30), title, font=tfont, fill=(212, 175, 55))
+    # Subtitle: fit text to width
+    subtitle, sfont = _fit_text(draw, subtitle, W - 2 * int(W * 0.06), sub_font)
+    draw.text((W * 0.06, H - 90), subtitle, font=sfont, fill=(245, 245, 240))
     # bowl-bottom text (flaw)
     draw.text((W * 0.05, H - 36), "\u62c9\u9762\u4e00\u756a", font=sub_font, fill=(200, 180, 130))
 
