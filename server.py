@@ -38,6 +38,19 @@ from flask import Flask, Response, abort, jsonify, redirect, request, send_from_
 
 from imagegen import generate as imagegen_generate
 
+# --- Image generation logger (writes to logs/imagegen.log) ---
+import logging
+from logging.handlers import RotatingFileHandler
+
+_imglog = logging.getLogger("imagegen")
+_imglog.setLevel(logging.DEBUG)
+_log_dir = Path(__file__).parent / "logs"
+_log_dir.mkdir(exist_ok=True)
+_fh = RotatingFileHandler(_log_dir / "imagegen.log", maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")
+_fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+_imglog.addHandler(_fh)
+# --- end imagegen logger ---
+
 
 def _load_env_file():
     """Load .env if present, otherwise .env.example. Existing env vars win."""
@@ -77,6 +90,7 @@ def _call_image_api(prompt: str, size: str = "1024x1024") -> bytes:
     import urllib.error
 
     url = f"{_IMAGE_API_BASE}/v1/images/generations"
+    prompt_preview = prompt[:80].replace("\n", " ")
     body = json.dumps({
         "model": _IMAGE_API_MODEL,
         "prompt": prompt,
@@ -89,6 +103,9 @@ def _call_image_api(prompt: str, size: str = "1024x1024") -> bytes:
         "Authorization": f"Bearer {_IMAGE_API_KEY}",
     })
 
+    _imglog.info("REQ model=%s size=%s prompt=\"%s\"", _IMAGE_API_MODEL, size, prompt_preview)
+    t0 = time.time()
+
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
             raw = resp.read().decode("utf-8")
@@ -97,18 +114,29 @@ def _call_image_api(prompt: str, size: str = "1024x1024") -> bytes:
             data, _ = decoder.raw_decode(raw)
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8", errors="replace")[:500]
+        elapsed = time.time() - t0
+        _imglog.error("FAIL HTTP %s after %.1fs model=%s body=%s", e.code, elapsed, _IMAGE_API_MODEL, err_body)
         raise RuntimeError(f"image API HTTP {e.code}: {err_body}")
+    except Exception as e:
+        elapsed = time.time() - t0
+        _imglog.error("FAIL exception after %.1fs model=%s err=%s", elapsed, _IMAGE_API_MODEL, e)
+        raise
+
+    elapsed = time.time() - t0
 
     # Response: {"data": [{"url": "..."}]} or {"data": [{"b64_json": "..."}]}
     item = data.get("data", [{}])[0]
     if item.get("url"):
+        _imglog.info("OK %.1fs model=%s source=url", elapsed, _IMAGE_API_MODEL)
         img_req = urllib.request.Request(item["url"])
         with urllib.request.urlopen(img_req, timeout=60) as img_resp:
             return img_resp.read()
     elif item.get("b64_json"):
+        _imglog.info("OK %.1fs model=%s source=b64_json", elapsed, _IMAGE_API_MODEL)
         import base64
         return base64.b64decode(item["b64_json"])
     else:
+        _imglog.error("FAIL no image in response model=%s resp=%s", _IMAGE_API_MODEL, json.dumps(data)[:300])
         raise RuntimeError(f"image API returned no image: {json.dumps(data)[:300]}")
 
 
@@ -875,12 +903,14 @@ def commands():
             size = "1792x1024"
         elif height > width * 1.5:
             size = "1024x1792"
+        _imglog.info("CMD generate_image canvas=%s size=%s w=%d h=%d style=%s", cid, size, width, height, style)
         try:
             if _IMAGE_API_KEY:
                 buf = _call_image_api(prompt=prompt, size=size)
             else:
                 buf = imagegen_generate(prompt=prompt, style=style, width=width, height=height, refs=refs)
         except Exception as e:
+            _imglog.error("CMD generate_image FAIL canvas=%s err=%s", cid, e)
             return jsonify({"ok": False, "error": f"imagegen: {e}"}), 500
         # Save directly into project-local page assets
         assets_dir = _page_assets_dir(cid)
@@ -894,6 +924,7 @@ def commands():
         meta = {"prompt": prompt, "style": style, "width": width, "height": height, "size_bytes": len(buf),
                 "model": _IMAGE_API_MODEL if _IMAGE_API_KEY else "pil"}
         result = {"ok": True, "image_url": url, "image_meta": meta, "canvas_id": cid}
+        _imglog.info("DONE canvas=%s file=%s size_bytes=%d", cid, fname, len(buf))
         _broadcast("image_generated", result)
 
     elif action == "delete_shape":
